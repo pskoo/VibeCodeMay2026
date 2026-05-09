@@ -1,0 +1,6 @@
+{
+  "name": "Neon Snake Extreme",
+  "description": "A polished, retro-neon Snake game with smooth controls, collision detection, and a high-score system.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
