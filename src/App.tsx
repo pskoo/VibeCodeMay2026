@@ -16,6 +16,16 @@ const MIN_SPEED = 60;
 type Point = { x: number; y: number };
 type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
 
+type Particle = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  color: string;
+  size: number;
+};
+
 export default function App() {
   // --- Refs ---
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -37,9 +47,12 @@ export default function App() {
     const saved = localStorage.getItem('snake-high-score');
     return saved ? parseInt(saved, 10) : 0;
   });
-  const [gameState, setGameState] = useState<'IDLE' | 'PLAYING' | 'PAUSED' | 'GAME_OVER'>('IDLE');
+  const [gameState, setGameState] = useState<'IDLE' | 'INITIALIZING' | 'PLAYING' | 'PAUSED' | 'GAME_OVER'>('IDLE');
   const [speed, setSpeed] = useState(INITIAL_SPEED);
   const [dimensions, setDimensions] = useState({ width: 400, height: 400 });
+  const [particles, setParticles] = useState<Particle[]>([]);
+  const [isShaking, setIsShaking] = useState(false);
+  const [showFlash, setShowFlash] = useState(false);
 
   // --- Helpers ---
   const getRandomPoint = useCallback((currentSnake: Point[], width: number, height: number): Point => {
@@ -59,6 +72,29 @@ export default function App() {
     return newPoint;
   }, []);
 
+  const createExplosion = useCallback((x: number, y: number, color: string) => {
+    const newParticles: Particle[] = [];
+    for (let i = 0; i < 15; i++) {
+      newParticles.push({
+        x: x * GRID_SIZE + GRID_SIZE / 2,
+        y: y * GRID_SIZE + GRID_SIZE / 2,
+        vx: (Math.random() - 0.5) * 8,
+        vy: (Math.random() - 0.5) * 8,
+        life: 1.0,
+        color: color,
+        size: Math.random() * 4 + 2,
+      });
+    }
+    setParticles(prev => [...prev, ...newParticles]);
+  }, []);
+
+  const triggerCollisionEffect = useCallback(() => {
+    setIsShaking(true);
+    setShowFlash(true);
+    setTimeout(() => setIsShaking(false), 300);
+    setTimeout(() => setShowFlash(false), 150);
+  }, []);
+
   const resetGame = () => {
     setSnake([
       { x: 10, y: 10 },
@@ -71,10 +107,19 @@ export default function App() {
     setSpeed(INITIAL_SPEED);
     directionRef.current = 'RIGHT';
     nextDirectionRef.current = 'RIGHT';
-    setGameState('PLAYING');
+    setGameState('INITIALIZING');
   };
 
   // --- Logic ---
+  useEffect(() => {
+    if (gameState === 'INITIALIZING') {
+      const timer = setTimeout(() => {
+        setGameState('PLAYING');
+      }, 2200);
+      return () => clearTimeout(timer);
+    }
+  }, [gameState]);
+
   const update = useCallback(() => {
     if (gameState !== 'PLAYING') return;
 
@@ -97,12 +142,14 @@ export default function App() {
       // Collision detection: Walls
       if (newHead.x < 0 || newHead.x >= cols || newHead.y < 0 || newHead.y >= rows) {
         setGameState('GAME_OVER');
+        triggerCollisionEffect();
         return prevSnake;
       }
 
       // Collision detection: Self
       if (prevSnake.some(p => p.x === newHead.x && p.y === newHead.y)) {
         setGameState('GAME_OVER');
+        triggerCollisionEffect();
         return prevSnake;
       }
 
@@ -111,6 +158,7 @@ export default function App() {
       // Check if food eaten
       if (newHead.x === food.x && newHead.y === food.y) {
         setScore(s => s + 10);
+        createExplosion(food.x, food.y, '#f43f5e');
         setFood(getRandomPoint(newSnake, dimensions.width, dimensions.height));
         setSpeed(prev => Math.max(MIN_SPEED, prev - SPEED_INCREMENT));
         // Don't pop tail if food eaten
@@ -199,7 +247,17 @@ export default function App() {
     });
 
     ctx.shadowBlur = 0;
-  }, [snake, food]);
+
+    // Draw Particles
+    particles.forEach(p => {
+      ctx.globalAlpha = p.life;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1.0;
+  }, [snake, food, particles]);
 
   // --- Effects ---
   useEffect(() => {
@@ -250,6 +308,19 @@ export default function App() {
         lastUpdateTimeRef.current = time;
       }
     }
+    
+    // Update Particles
+    setParticles(prev => 
+      prev
+        .map(p => ({
+          ...p,
+          x: p.x + p.vx,
+          y: p.y + p.vy,
+          life: p.life - 0.02,
+        }))
+        .filter(p => p.life > 0)
+    );
+
     draw();
     requestRef.current = requestAnimationFrame(animate);
   }, [gameState, speed, update, draw]);
@@ -303,8 +374,13 @@ export default function App() {
         {/* Dot Grid Overlay */}
         <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#64748b 0.5px, transparent 0.5px)', backgroundSize: '24px 24px' }}></div>
         
-        <div 
+        <motion.div 
           ref={containerRef}
+          animate={isShaking ? {
+            x: [-4, 4, -4, 4, 0],
+            y: [-4, 4, -4, 4, 0],
+          } : {}}
+          transition={{ duration: 0.3 }}
           className="relative z-10 bg-slate-900 p-1 rounded-xl shadow-2xl border border-slate-700/50 flex items-center justify-center aspect-square w-full max-w-[500px]"
           id="game-canvas-container"
         >
@@ -315,15 +391,83 @@ export default function App() {
             className="block rounded-lg shadow-inner cursor-none"
           />
 
+          {showFlash && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.6 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-white z-20 pointer-events-none rounded-lg"
+            />
+          )}
+
           {/* Overlays */}
           <AnimatePresence>
-            {(gameState === 'IDLE' || gameState === 'GAME_OVER' || gameState === 'PAUSED') && (
+            {(gameState === 'IDLE' || gameState === 'INITIALIZING' || gameState === 'GAME_OVER' || gameState === 'PAUSED') && (
               <motion.div 
                 initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
                 animate={{ opacity: 1, backdropFilter: 'blur(8px)' }}
                 exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
-                className="absolute inset-0 bg-slate-900/80 flex items-center justify-center z-10 p-8 text-center rounded-lg"
+                className="absolute inset-0 bg-slate-900/80 flex items-center justify-center z-10 p-8 text-center rounded-lg overflow-hidden"
               >
+                {/* Intro Sequence Overlay */}
+                {gameState === 'INITIALIZING' && (
+                  <div className="relative w-full h-full flex flex-col items-center justify-center pointer-events-none">
+                    <motion.div 
+                      key="scanner"
+                      initial={{ top: '-10%' }}
+                      animate={{ top: '110%' }}
+                      transition={{ duration: 1.5, repeat: 1, ease: 'linear' }}
+                      className="absolute left-0 right-0 h-1 bg-emerald-500/50 shadow-[0_0_20px_#10b981] z-20"
+                    />
+                    
+                    <div className="space-y-4 relative z-10">
+                      <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.2 }}
+                        className="text-emerald-400 font-mono text-xs tracking-[0.3em] uppercase mb-2"
+                      >
+                        System Authorization Required
+                      </motion.div>
+                      
+                      <motion.div
+                        initial={{ scale: 0.8, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: 0.4, type: 'spring' }}
+                        className="text-6xl font-black italic text-white tracking-tighter"
+                      >
+                        BOOTING<span className="text-emerald-500">.</span>
+                      </motion.div>
+                      
+                      <div className="flex justify-center gap-1">
+                        {[0, 1, 2, 3, 4].map((i) => (
+                          <motion.div
+                            key={i}
+                            initial={{ scaleY: 0 }}
+                            animate={{ scaleY: [0, 1, 0] }}
+                            transition={{ 
+                              duration: 0.4, 
+                              repeat: Infinity, 
+                              delay: i * 0.1,
+                              repeatDelay: 0.2
+                            }}
+                            className="w-1 h-8 bg-emerald-500"
+                          />
+                        ))}
+                      </div>
+
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: [0, 1, 0] }}
+                        transition={{ duration: 0.1, repeat: 5, delay: 1.5 }}
+                        className="text-emerald-500 font-mono text-[10px] absolute -bottom-12 left-0 right-0"
+                      >
+                        CRITICAL SYNC: 100% SUCCESSFUL
+                      </motion.div>
+                    </div>
+                  </div>
+                )}
+
                 <motion.div
                   initial={{ scale: 0.9, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
@@ -357,22 +501,45 @@ export default function App() {
 
                   {gameState === 'GAME_OVER' && (
                     <>
-                      <h2 className="text-4xl font-bold text-white mb-2 uppercase tracking-tighter italic text-rose-500">System Failure</h2>
-                      <div className="text-5xl font-mono font-bold mb-6 text-white">{score.toString().padStart(3, '0')}</div>
-                      <p className="text-slate-400 mb-8 text-sm">Connection lost. Final score recorded. Re-synchronizing data banks...</p>
-                      <button 
+                      <motion.h2 
+                        initial={{ y: -20, opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        className="text-4xl font-bold text-white mb-2 uppercase tracking-tighter italic text-rose-500"
+                      >
+                        System Failure
+                      </motion.h2>
+                      <motion.div 
+                        initial={{ scale: 0.5, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ delay: 0.2, type: 'spring' }}
+                        className="text-7xl font-mono font-bold mb-6 text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.3)]"
+                      >
+                        {score.toString().padStart(3, '0')}
+                      </motion.div>
+                      <motion.p 
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: 0.4 }}
+                        className="text-slate-400 mb-8 text-sm"
+                      >
+                        Connection lost. Final score recorded. Re-synchronizing data banks...
+                      </motion.p>
+                      <motion.button 
+                        initial={{ y: 20, opacity: 0 }}
+                        animate={{ y: 0, opacity: 1 }}
+                        transition={{ delay: 0.6 }}
                         onClick={resetGame}
                         className="px-8 py-3 bg-white text-slate-950 font-bold rounded-full hover:bg-slate-200 transition-colors shadow-[0_0_20px_rgba(255,255,255,0.2)] uppercase tracking-widest flex items-center justify-center gap-2 mx-auto"
                       >
                         <RefreshCcw className="w-5 h-5" /> Retry Sync
-                      </button>
+                      </motion.button>
                     </>
                   )}
                 </motion.div>
               </motion.div>
             )}
           </AnimatePresence>
-        </div>
+        </motion.div>
 
         {/* Sidebar / Controls Info */}
         <aside className="absolute right-10 top-1/2 -translate-y-1/2 w-64 hidden xl:flex flex-col gap-6">
